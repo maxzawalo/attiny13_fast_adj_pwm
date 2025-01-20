@@ -4,7 +4,7 @@
 #define PWM1 PB1
 #define BTN_RUN PB2
 
-#define CUT_OFF_PWM 8
+#define CUT_OFF_PWM (8<<7)
 
 //#define PWM_SPEED_TEST
 
@@ -37,8 +37,13 @@ int adc_read(unsigned char channel)
 }
 #endif
  
- unsigned char pwm = 0;
+//При малых значениях регулятора скважности RV1 inc_pwm < 1.
+//16 битные переменные для того, чтобы не использовать float.
+//Чтобы inc_pwm > 0 умножаем всё на 128 (<<7). 
+ unsigned int pwm_target = 0;
+ unsigned int pwm_current = 0;
  unsigned int pwm_cycles_cnt = 0;
+ unsigned int inc_pwm = 0;
 
 int main (void) 
 { 
@@ -59,16 +64,24 @@ int main (void)
    while(1)
    { 
 #ifndef PWM_SPEED_TEST
-      pwm_cycles_cnt = pwm << 2;//10 Делим на 2.5, т.к. pwm 255 уровней, а не 100
+	  pwm_target = adc_read(3)<<7;//"Читаем" резистор когда ШИМ не "шумит"
+
+	  inc_pwm = pwm_target/90;//Цикл while(1) порядка 11мс. Плавный пуск около 1000мс. 1000/11=90.
+	  //Плавный пуск.   
+	  pwm_current += inc_pwm;
+	  if(pwm_current > pwm_target)
+		pwm_current = pwm_target;
+
+      pwm_cycles_cnt = (pwm_current>>7)<< 2;//pwm_current * (10 Делим на 2.5, т.к. pwm 255 уровней, а не 100)
       if(!(PINB &(1<<BTN_RUN)))
       {
-	 if(pwm > CUT_OFF_PWM)
-	    PORTB |= (1<<PWM0);//Ставим один пин ШИМ в 1, иначе будут синфазно работать
+		 if(pwm_target > CUT_OFF_PWM)
+			PORTB |= (1<<PWM0);//Ставим один пин ШИМ в 1, иначе будут синфазно работать
 		//Цикл заполнения (duty)   
 		 for(i = 0; i < pwm_cycles_cnt;i++)
 		 {
 #endif
-			if(pwm > CUT_OFF_PWM)
+			if(pwm_target > CUT_OFF_PWM)
 			   PORTB ^= pwm_bits_mask;//инверсия всех битов ШИМ сразу или будет задержка
 			asm("nop");//_delay_us(1);
 #ifndef PWM_SPEED_TEST	    
@@ -76,14 +89,15 @@ int main (void)
       }
       else//"Добиваем" до нужной задержки всего цикла
       {
+		 pwm_current = 0;
 		 for(i = 0;i < pwm_cycles_cnt;i++)//Фукции _delay_us нельзя передать переменную,а только константу
 		 {
 			asm("nop"); //_delay_us(1);
 		 }
       }
       PORTB &= ~pwm_bits_mask; //ШИМ вЫкл
-      pwm = adc_read(3);
-      pwm_cycles_cnt = (255 - pwm)*11>>1;//10/2.5*K
+	  //Делим на 128 (>>7) - нормализуем значения
+      pwm_cycles_cnt = (255 - (pwm_current>>7))*11>>1;//10/2.5*K
       //Цикл релакса  
       for(i = 0;i<pwm_cycles_cnt;i++)
       {
